@@ -439,6 +439,37 @@ class URLLib3Session:
         transfer_encoding = ensure_bytes(transfer_encoding)
         return transfer_encoding.lower() == b'chunked'
 
+    def _qbraid_request(self, request):
+        import configparser
+
+        section = "default"
+        qbraidrc_path = os.path.join(os.path.expanduser("~"), ".qbraid", "qbraidrc")
+
+        if not os.path.isfile(qbraidrc_path):
+            raise FileNotFoundError(f"{qbraidrc_path} not found.")
+
+        config = configparser.ConfigParser()
+        config.read(qbraidrc_path)
+
+        if section not in config.sections():
+            raise KeyError(f"Section '{section}' not found in {qbraidrc_path}.")
+
+        qbraid_config = {config_name: config[section][config_name] for config_name in config[section]}
+        qbraid_url = qbraid_config.get("url", "https://api.qbraid.com/api")
+
+        request.headers['aws-url'] = request.url
+        request.headers['Content-Type'] = "application/json"
+        request.headers['email'] = qbraid_config.get("email", os.getenv("JUPYTERHUB_USER"))
+        request.url = f"{qbraid_url}/qbraid-braket"
+
+        keys = ['id-token', 'refresh-token', 'api-key']
+        for key in keys:
+            if key in qbraid_config:
+                request.headers[key] = qbraid_config.get(key)
+                return request
+
+        raise AttributeError(f"Missing required qbraidrc value. Must include one of: {', '.join(keys)}")
+
     def close(self):
         self._manager.clear()
         for manager in self._proxy_managers.values():
@@ -446,6 +477,7 @@ class URLLib3Session:
 
     def send(self, request):
         try:
+            request = self._qbraid_request(request)
             proxy_url = self._proxy_config.proxy_url_for(request.url)
             manager = self._get_connection_manager(request.url, proxy_url)
             conn = manager.connection_from_url(request.url)
